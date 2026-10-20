@@ -384,6 +384,7 @@ type BlockChain struct {
 	newPayloadFeed           event.Feed // Feed for engine API newPayload events
 	finalizedHeaderFeed      event.Feed
 	highestVerifiedBlockFeed event.Feed
+	diffRecorder             StateDiffRecorder // optional, records the write set of every block written with state
 	blockProcCounter         int32
 	scope                    event.SubscriptionScope
 	genesisBlock             *types.Block
@@ -1939,6 +1940,11 @@ func (bc *BlockChain) writeKnownBlock(block *types.Block) error {
 // writeBlockWithState writes block, metadata and corresponding state data to the
 // database.
 func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.Receipt, statedb *state.StateDB) error {
+	if bc.diffRecorder != nil {
+		// The state is finalised (the root was already computed by the
+		// validator or the miner) and not yet committed.
+		bc.diffRecorder(block, statedb.StateDiff())
+	}
 	// Calculate the total difficulty of the block
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
 	if ptd == nil {
@@ -2099,12 +2105,20 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *types.Block, receipts []*types
 // writeBlockAndSetHead is the internal implementation of WriteBlockAndSetHead.
 // This function expects the chain mutex to be held.
 func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types.Receipt, logs []*types.Log, state *state.StateDB, sealedBlockSender *event.TypeMux) (status WriteStatus, err error) {
+	return bc.writeBlockAndSetHeadOpts(block, receipts, logs, state, sealedBlockSender, true)
+}
+
+// writeBlockAndSetHeadOpts is writeBlockAndSetHead with control over the
+// HighestVerifiedBlockEvent. The event triggers voting, so it must only be sent
+// for blocks this node executed itself; blocks imported from a state diff pass
+// notifyVerified=false.
+func (bc *BlockChain) writeBlockAndSetHeadOpts(block *types.Block, receipts []*types.Receipt, logs []*types.Log, state *state.StateDB, sealedBlockSender *event.TypeMux, notifyVerified bool) (status WriteStatus, err error) {
 	currentBlock := bc.CurrentBlock()
 	reorg, err := bc.forker.ReorgNeededWithFastFinality(currentBlock, block.Header())
 	if err != nil {
 		return NonStatTy, err
 	}
-	if reorg {
+	if reorg && notifyVerified {
 		bc.highestVerifiedBlock.Store(types.CopyHeader(block.Header()))
 		bc.highestVerifiedBlockFeed.Send(HighestVerifiedBlockEvent{Header: block.Header()})
 		if sealedBlockSender != nil {
