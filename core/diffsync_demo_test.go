@@ -357,6 +357,7 @@ func (w *diffWorkload) newSyncChain(t testing.TB, dir string) *BlockChain {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { db.Close() })
 	return bc
 }
 
@@ -370,7 +371,10 @@ func (w *diffWorkload) newScratchChain(t testing.TB) (*BlockChain, func()) {
 	}
 	bc := w.newSyncChain(t, dir)
 	return bc, func() {
+		// Close the database before deleting it: pebble keeps compacting in
+		// the background after the chain is stopped.
 		bc.Stop()
+		bc.db.Close()
 		os.RemoveAll(dir)
 	}
 }
